@@ -1,0 +1,2 @@
+NEED_LIBRT      @{need_librt}
+NEED_LIBPTHREAD @{need_libpthread}
