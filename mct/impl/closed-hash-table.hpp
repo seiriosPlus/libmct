@@ -663,11 +663,11 @@ namespace mct
       //
       // In other words, I'm sure that in practice -1/-2 cannot be valid bucket addresses.
 
-      static  single_link_storage* const
+      static  single_link_storage* 
       empty_value ()
       {  return reinterpret_cast <single_link_storage* const> (-1);  }
 
-      static  single_link_storage* const
+      static  single_link_storage* 
       debris_value ()
       {  return reinterpret_cast <single_link_storage* const> (-2);  }
     };
@@ -2585,6 +2585,18 @@ namespace mct
         return make_const_iterator (_data.num_used != 0 ? lookup (key) : _data.end ());
       }
 
+      iterator
+      find_with_hash (const key_type& key, size_type hash)
+      {
+        return make_iterator (_data.num_used != 0 ? lookup_with_hash (key, hash) : _data.end ());
+      }
+
+      const_iterator
+      find_with_hash (const key_type& key, size_type hash) const
+      {
+        return make_const_iterator (_data.num_used != 0 ? lookup_with_hash (key, hash) : _data.end ());
+      }
+
       size_type
       count (const key_type& key) const
       {
@@ -2689,12 +2701,15 @@ namespace mct
 
 
       bucket_pointer  lookup (const key_type& key)  const;
+      bucket_pointer  lookup_with_hash (const key_type& key, size_type hash)  const;
 
       // Templated for convenience of map's operator[].  Exact meaning of 'that' is up to
       // subclasses or, more specifically, to the bucket type.  For linked tables this is
       // 'before', for forward table it's 'after'.
       template <typename type>
-      std::pair <bucket_pointer, bool>  lookup_or_insert (type data, bucket_pointer that = 0);
+      std::pair <bucket_pointer, bool>  lookup_or_insert (type&& data, bucket_pointer that = 0);
+      template <typename type>
+      std::pair <bucket_pointer, bool>  lookup_or_insert_with_hash (type data, size_type hash, bucket_pointer that = 0);
 
 
       void  do_set_max_load_factor (float max_load_factor);
@@ -2904,6 +2919,14 @@ namespace mct
         return std::make_pair (this->make_iterator (result.first), result.second);
       }
 
+      std::pair <iterator, bool>
+      insert_with_hash (const value_type& value, size_type hash)
+      {
+        const std::pair <bucket_pointer, bool>  result
+          (this->template lookup_or_insert_with_hash <const value_type&> (value, hash));
+        return std::make_pair (this->make_iterator (result.first), result.second);
+      }
+
       // Note that we currently just ignore 'hint'.
       iterator
       insert (const_iterator hint, const value_type& value)
@@ -2929,6 +2952,14 @@ namespace mct
       {
         const std::pair <bucket_pointer, bool>  result
           (this->template lookup_or_insert <value_type&&> (std::move (value)));
+        return std::make_pair (this->make_iterator (result.first), result.second);
+      }
+
+      std::pair <iterator, bool>
+      insert_with_hash (value_type&& value, size_type hash)
+      {
+        const std::pair <bucket_pointer, bool>  result
+          (this->template lookup_or_insert_with_hash <value_type&&> (std::move (value), hash));
         return std::make_pair (this->make_iterator (result.first), result.second);
       }
 
@@ -2971,6 +3002,12 @@ namespace mct
         return this->_data.num_used != 0 && do_erase (key) ? 1 : 0;
       }
 
+      size_type
+      erase_with_hash (const key_type& key, size_type hash)
+      {
+        return this->_data.num_used != 0 && do_erase_with_hash (key, hash) ? 1 : 0;
+      }
+
       iterator
       erase (const_iterator position)
       {
@@ -3010,6 +3047,20 @@ namespace mct
       do_erase (const key_type& key)
       {
         const bucket_pointer  bucket = this->lookup (key);
+
+        if (bucket != this->_data.end ())
+          {
+            do_erase (bucket);
+            return true;
+          }
+        else
+          return false;
+      }
+
+      bool
+      do_erase_with_hash (const key_type& key, size_type hash)
+      {
+        const bucket_pointer  bucket = this->lookup_with_hash (key, hash);
 
         if (bucket != this->_data.end ())
           {
@@ -3978,15 +4029,23 @@ namespace mct
     }
 
 
+    template <typename Bucket, typename Hash, typename Equal>
+    typename hash_table_base <Bucket, Hash, Equal>::bucket_pointer
+    hash_table_base <Bucket, Hash, Equal>::
+    lookup (const key_type& key) const
+    {
+        size_type hash = _hash (key);
+        return lookup_with_hash (key, hash);
+    }
     // According to benchmarks, explicitly unrolling first pass gives a small speedup for
     // lookup() and lookup_or_insert().
 
     template <typename Bucket, typename Hash, typename Equal>
     typename hash_table_base <Bucket, Hash, Equal>::bucket_pointer
     hash_table_base <Bucket, Hash, Equal>::
-    lookup (const key_type& key) const
+    lookup_with_hash (const key_type& key, size_type hash) const
     {
-      const size_type  hash    = bucket_type::postprocess_hash (_hash (key));
+      hash    = bucket_type::postprocess_hash (hash);
       size_type        look_at = _data.start_probing (hash);
 
       const bucket_pointer     bucket = (_data.buckets + look_at);
@@ -4022,7 +4081,17 @@ namespace mct
     template <typename type>
     std::pair <typename hash_table_base <Bucket, Hash, Equal>::bucket_pointer, bool>
     hash_table_base <Bucket, Hash, Equal>::
-    lookup_or_insert (type data, bucket_pointer that)
+    lookup_or_insert (type&& data, bucket_pointer that)
+    {
+        size_type hash = _hash (bucket_type::extract_key (data));
+        return lookup_or_insert_with_hash (std::forward<type>(data), hash, that);
+    }
+    
+    template <typename Bucket, typename Hash, typename Equal>
+    template <typename type>
+    std::pair <typename hash_table_base <Bucket, Hash, Equal>::bucket_pointer, bool>
+    hash_table_base <Bucket, Hash, Equal>::
+    lookup_or_insert_with_hash (type data, size_type hash, bucket_pointer that)
     {
       // A little bit pessimistic: if we end up replacing debris, we didn't need to
       // resize.  However, it is simpler to resize now (at most we "lose" one bucket this
@@ -4032,7 +4101,7 @@ namespace mct
         that = clear_debris_or_grow (that);
 
       const key_type&  key     = bucket_type::extract_key (data);
-      const size_type  hash    = bucket_type::postprocess_hash (_hash (key));
+      hash = bucket_type::postprocess_hash (hash);
       size_type        look_at = _data.start_probing (hash);
 
       const bucket_pointer     bucket = (_data.buckets + look_at);

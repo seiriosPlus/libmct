@@ -36,6 +36,44 @@
 
 namespace mct
 {
+    struct Pointer {
+        uintptr_t ptr;
+
+        Pointer() : ptr(0) {
+        }
+        Pointer(void* x) : ptr((uintptr_t)x) {
+        }
+        Pointer& operator=(const Pointer& other) {
+            ptr = other.ptr & ~(uintptr_t)3U | ptr & 3U;
+            return *this;
+        }
+        Pointer& operator=(void* x) {
+            ptr = (uintptr_t)x & ~(uintptr_t)3U | ptr & 3U;
+            return *this;
+        }
+        operator void* () const {
+            return (void*)(ptr & ~(uintptr_t)3U);
+        }
+        uintptr_t usage() const {
+            return ptr & 3U;
+        }
+        void set_usage(uintptr_t usage) {
+            ptr = ptr & ~(uintptr_t)3U | usage;
+        }
+    };
+
+    template<class KEY>
+        struct external_use<std::pair<KEY, Pointer>> {
+            typedef std::pair<KEY, Pointer> type;
+            typedef uintptr_t value_type;
+
+            static uintptr_t get(const type& x) {
+                return x.second.usage();
+            }
+            static void set(type& x, uintptr_t usage) {
+                x.second.set_usage(usage);
+            }
+        };
 
   namespace impl
   {
